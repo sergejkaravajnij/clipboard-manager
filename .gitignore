@@ -1,0 +1,6 @@
+/target/
+/artifacts/
+*.exe
+*.pdb
+*.sqlite*
+*.log
