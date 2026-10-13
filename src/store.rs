@@ -84,28 +84,20 @@ impl Store {
             "search LIKE ? ESCAPE '\\'"
         };
         let sql = format!(
-            "SELECT id, strftime('%d.%m %H:%M', created, 'unixepoch', 'localtime'), title, bytes,
+            "SELECT id, title,
              NOT EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (13,15))
              FROM entries WHERE {predicate} ORDER BY id DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = self.0.prepare(&sql)?;
         let rows = stmt.query_map(params![pattern, PAGE_SIZE as i64, offset as i64], |r| {
-            let bytes: i64 = r.get(3)?;
+            let title = r.get::<_, String>(1)?;
             Ok(Row {
                 id: r.get(0)?,
-                label: format!(
-                    "{}   {}   [{}]",
-                    r.get::<_, String>(1)?,
-                    {
-                        let title = r.get::<_, String>(2)?;
-                        if r.get::<_, bool>(4)? {
-                            crate::i18n::current().generated(&title)
-                        } else {
-                            title
-                        }
-                    },
-                    size_label(bytes)
-                ),
+                label: if r.get::<_, bool>(2)? {
+                    crate::i18n::current().generated(&title)
+                } else {
+                    title
+                },
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -148,20 +140,6 @@ impl Store {
     pub fn image(&self, entry: i64) -> Result<Option<Vec<u8>>> {
         use rusqlite::OptionalExtension;
         Ok(self.0.query_row("SELECT data FROM formats WHERE entry_id=? AND format_id IN (8,17) ORDER BY format_id DESC LIMIT 1", [entry], |r| r.get(0)).optional()?)
-    }
-}
-
-fn size_label(bytes: i64) -> String {
-    if bytes >= 1024 * 1024 {
-        format!(
-            "{:.1} {}",
-            bytes as f64 / 1048576.0,
-            crate::i18n::tr("MB", "МБ")
-        )
-    } else if bytes >= 1024 {
-        format!("{} {}", bytes / 1024, crate::i18n::tr("KB", "КБ"))
-    } else {
-        format!("{bytes} {}", crate::i18n::tr("B", "Б"))
     }
 }
 

@@ -454,28 +454,26 @@ impl App {
             let height = rect.bottom.max(300);
             MoveWindow(self.search, 12, 12, width - 140, 32, 1);
             MoveWindow(self.settings_button, width - 116, 12, 104, 32, 1);
-            let list_height = ((height - 140) * 55 / 100).max(80);
-            MoveWindow(self.list, 12, 54, width - 24, list_height, 1);
+            let content_height = (height - 120).max(80);
+            let list_width = (width - 36) * 55 / 100;
+            let preview_x = 24 + list_width;
+            let preview_width = width - preview_x - 12;
+            MoveWindow(self.list, 12, 54, list_width, content_height, 1);
             let image_visible = self.image_state.borrow().is_some();
-            let preview_width = if image_visible {
-                (width - 36) / 2
-            } else {
-                width - 24
-            };
             MoveWindow(
                 self.preview,
-                12,
-                64 + list_height,
+                preview_x,
+                54,
                 preview_width,
-                (height - 130 - list_height).max(50),
+                if image_visible { 64 } else { content_height },
                 1,
             );
             MoveWindow(
                 self.image_window,
-                24 + preview_width,
-                64 + list_height,
-                width - preview_width - 36,
-                (height - 130 - list_height).max(50),
+                preview_x,
+                128,
+                preview_width,
+                (content_height - 74).max(1),
                 1,
             );
             ShowWindow(
@@ -502,6 +500,23 @@ impl App {
                         wide(&row.label).as_ptr() as isize,
                     );
                 }
+                let dc = GetDC(self.list);
+                let old_font = SelectObject(dc, self.font);
+                let mut longest = 0;
+                for row in &rows {
+                    let label = wide(&row.label);
+                    let mut size = SIZE::default();
+                    GetTextExtentPoint32W(dc, label.as_ptr(), (label.len() - 1) as i32, &mut size);
+                    longest = longest.max(size.cx);
+                }
+                SelectObject(dc, old_font);
+                ReleaseDC(self.list, dc);
+                SendMessageW(
+                    self.list,
+                    LB_SETHORIZONTALEXTENT,
+                    (longest + 12) as usize,
+                    0,
+                );
                 self.rows = rows;
                 SendMessageW(self.list, LB_SETCURSEL, 0, 0);
                 SendMessageW(self.list, WM_SETREDRAW, 1, 0);
