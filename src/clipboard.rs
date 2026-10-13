@@ -86,7 +86,8 @@ unsafe fn read_format(id: u32) -> Result<Option<Format>> {
         return Err("Виртуальные файлы не входят в поддерживаемые форматы".into());
     }
     if name == "DataObject" || name == "Ole Private Data" {
-        return Err(format!("{name}: ссылки на объекты процесса не переносятся в историю").into());
+        // OLE transport references are not independent clipboard content.
+        return Ok(None);
     }
     let handle = unsafe { GetClipboardData(id) };
     if handle.is_null() {

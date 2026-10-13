@@ -191,10 +191,29 @@ pub fn preview(text: &str, generated: bool) -> String {
             body.into()
         };
         if let Some((_, warning)) = metadata.split_once("\r\nНе сохранено: ") {
+            let warning = warning
+                .split("; ")
+                .filter(|item| {
+                    !["DataObject", "Ole Private Data"].iter().any(|name| {
+                        *item
+                            == format!(
+                                "{name}: ссылки на объекты процесса не переносятся в историю"
+                            )
+                            || *item
+                                == format!(
+                                    "{name}: process object references cannot be saved in history"
+                                )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            if warning.is_empty() {
+                return body;
+            }
             format!(
                 "{body}\r\n\r\n{}{}",
                 message("Не сохранено: "),
-                message(warning)
+                message(&warning)
             )
         } else {
             body
@@ -222,6 +241,12 @@ mod tests {
         assert_eq!(
             preview("Изображение 10 × 20\r\n\r\nФорматы: DIB image", true),
             "Image 10 × 20"
+        );
+        let old_image = "Изображение 10 × 20\r\n\r\nФорматы: DIB image\r\nНе сохранено: DataObject: ссылки на объекты процесса не переносятся в историю; Ole Private Data: ссылки на объекты процесса не переносятся в историю";
+        assert_eq!(preview(old_image, true), "Image 10 × 20");
+        assert_eq!(
+            preview(&format!("{old_image}; Ошибка чтения палитры"), true),
+            "Image 10 × 20\r\n\r\nNot saved: Could not read the palette"
         );
         set(Language::Russian);
         assert_eq!(
