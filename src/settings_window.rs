@@ -75,6 +75,8 @@ pub struct SettingsWindow {
     save: HWND,
     cancel: HWND,
     clear: HWND,
+    retention: HWND,
+    retention_label: HWND,
 }
 
 impl SettingsWindow {
@@ -108,7 +110,7 @@ impl SettingsWindow {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 540,
-                360,
+                440,
                 owner,
                 null_mut(),
                 GetModuleHandleW(null()),
@@ -156,6 +158,16 @@ impl SettingsWindow {
             );
             let cancel = control(hwnd, "BUTTON", "", WS_TABSTOP, CANCEL_ID, font);
             let clear = control(hwnd, "BUTTON", "", WS_TABSTOP, CLEAR_ID, font);
+            let retention_label = control(hwnd, "STATIC", "", 0, 211, font);
+            let retention = control(
+                hwnd,
+                "EDIT",
+                "",
+                WS_TABSTOP | WS_BORDER | ES_NUMBER as u32,
+                212,
+                font,
+            );
+            SendMessageW(retention, EM_SETLIMITTEXT, 5, 0);
             if [
                 language_label,
                 language,
@@ -167,6 +179,8 @@ impl SettingsWindow {
                 save,
                 cancel,
                 clear,
+                retention,
+                retention_label,
             ]
             .iter()
             .any(|h| h.is_null())
@@ -182,9 +196,11 @@ impl SettingsWindow {
                 (clear, 390, 109, 112, 30),
                 (windows, 18, 149, 250, 26),
                 (hint, 18, 183, 484, 46),
-                (error, 18, 231, 484, 44),
-                (save, 282, 280, 100, 28),
-                (cancel, 390, 280, 112, 28),
+                (retention_label, 18, 231, 484, 24),
+                (retention, 18, 258, 100, 28),
+                (error, 18, 295, 484, 44),
+                (save, 282, 352, 100, 28),
+                (cancel, 390, 352, 112, 28),
             ] {
                 MoveWindow(h, x, y, width, height, 1);
             }
@@ -200,6 +216,8 @@ impl SettingsWindow {
                 save,
                 cancel,
                 clear,
+                retention,
+                retention_label,
             })
         }
     }
@@ -211,14 +229,28 @@ impl SettingsWindow {
             Language::English
         }
     }
-    pub fn candidate(&self) -> Preferences {
-        Preferences {
+    pub fn candidate(&self) -> Result<Preferences> {
+        let retention_days = crate::window_text(self.retention)
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|days| *days <= 36500)
+            .ok_or_else(|| {
+                self.selected_language()
+                    .choose(
+                        "Enter 0–36500 retention days (0 disables cleanup).",
+                        "Введите срок 0–36500 дней (0 отключает очистку).",
+                    )
+                    .to_string()
+            })?;
+        Ok(Preferences {
+            retention_days,
             language: self.selected_language(),
             hotkey: Hotkey::from_control(
                 unsafe { SendMessageW(self.hotkey, HKM_GETHOTKEY, 0, 0) } as usize,
                 unsafe { SendMessageW(self.windows, BM_GETCHECK, 0, 0) } == BST_CHECKED as isize,
             ),
-        }
+        })
     }
     pub fn translate(&self, language: Language) {
         unsafe {
@@ -238,6 +270,11 @@ impl SettingsWindow {
                 (self.clear, "Clear", "Очистить"),
                 (self.save, "Save", "Сохранить"),
                 (self.cancel, "Cancel", "Отмена"),
+                (
+                    self.retention_label,
+                    "Delete entries older than (days, 0 = keep forever)",
+                    "Удалять записи старше (дней, 0 = хранить всегда)",
+                ),
                 (
                     self.hint,
                     "Click the shortcut field and press a combination. Clear disables it.\r\nWindows may reserve some combinations.",
@@ -277,6 +314,7 @@ impl SettingsWindow {
                 0,
             );
             self.translate(p.language);
+            SetWindowTextW(self.retention, wide(&p.retention_days.to_string()).as_ptr());
             self.error("");
             ShowWindow(self.hwnd, SW_RESTORE);
             SetForegroundWindow(self.hwnd);

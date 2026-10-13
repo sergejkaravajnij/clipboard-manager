@@ -69,11 +69,13 @@ impl Hotkey {
 pub struct Preferences {
     pub language: Language,
     pub hotkey: Hotkey,
+    pub retention_days: u32,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             language: Language::English,
+            retention_days: 0,
             hotkey: Hotkey {
                 modifiers: MOD_CONTROL | MOD_ALT,
                 key: VK_V as u32,
@@ -101,6 +103,7 @@ impl Preferences {
                     }
                     "hotkey_modifiers" => p.hotkey.modifiers = value.trim().parse()?,
                     "hotkey_key" => p.hotkey.key = value.trim().parse()?,
+                    "retention_days" => p.retention_days = value.trim().parse()?,
                     _ => {}
                 }
             }
@@ -115,10 +118,11 @@ impl Preferences {
         let mut file = std::fs::File::create(&temporary)?;
         write!(
             file,
-            "language={}\nhotkey_modifiers={}\nhotkey_key={}\n",
+            "language={}\nhotkey_modifiers={}\nhotkey_key={}\nretention_days={}\n",
             self.language.code(),
             self.hotkey.modifiers,
-            self.hotkey.key
+            self.hotkey.key,
+            self.retention_days
         )?;
         file.sync_all()?;
         drop(file);
@@ -206,6 +210,7 @@ mod tests {
         let path = dir.join("settings.ini");
         let mut p = Preferences {
             language: Language::Russian,
+            retention_days: 30,
             hotkey: Hotkey {
                 modifiers: MOD_CONTROL | MOD_SHIFT | MOD_WIN,
                 key: VK_H as u32,
@@ -215,8 +220,11 @@ mod tests {
         assert_eq!(Preferences::load(&path)?, p);
         p.language = Language::English;
         p.hotkey.key = 0;
+        p.retention_days = 0;
         p.save(&path)?;
         assert_eq!(Preferences::load(&path)?, p);
+        std::fs::write(&path, "language=ru\nhotkey_modifiers=3\nhotkey_key=86\n")?;
+        assert_eq!(Preferences::load(&path)?.retention_days, 0);
         std::fs::remove_file(path)?;
         std::fs::remove_dir(dir)?;
         Ok(())

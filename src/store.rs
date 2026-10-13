@@ -22,6 +22,20 @@ pub struct Format {
 }
 
 impl Store {
+    pub fn delete(&self, id: i64) -> Result<usize> {
+        Ok(self.0.execute("DELETE FROM entries WHERE id=?", [id])?)
+    }
+
+    pub fn prune(&self, days: u32, now: i64) -> Result<usize> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let cutoff = now.saturating_sub(i64::from(days) * 86400);
+        Ok(self
+            .0
+            .execute("DELETE FROM entries WHERE created < ?", [cutoff])?)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         let indexed: bool = conn.query_row(
@@ -40,6 +54,7 @@ impl Store {
                title TEXT NOT NULL DEFAULT '', search TEXT NOT NULL DEFAULT '',
                preview TEXT NOT NULL DEFAULT '', bytes INTEGER NOT NULL DEFAULT 0,
                formats INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX IF NOT EXISTS entries_created ON entries(created);
              CREATE TABLE IF NOT EXISTS formats (
                entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
                ordinal INTEGER NOT NULL, format_id INTEGER NOT NULL,
@@ -182,6 +197,45 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retention_boundary_disabled_cleanup_and_selected_delete() -> Result<()> {
+        let store = Store::open(Path::new(":memory:"))?;
+        for (id, created) in [(1, 86399), (2, 86400), (3, 86401), (4, 200000)] {
+            store.0.execute(
+                "INSERT INTO entries(id,created,title,search) VALUES(?,?,'entry','needle')",
+                params![id, created],
+            )?;
+            store.0.execute(
+                "INSERT INTO formats VALUES(?,0,13,'Unicode text',0,X'0000')",
+                [id],
+            )?;
+            store
+                .0
+                .execute("INSERT INTO thumbnails VALUES(?,NULL)", [id])?;
+        }
+        assert_eq!(store.prune(0, 172800)?, 0);
+        assert_eq!(store.count()?, 4);
+        assert_eq!(store.prune(1, 172800)?, 1);
+        assert_eq!(store.list("needle", 0)?.len(), 3);
+        assert_eq!(store.delete(3)?, 1);
+        assert_eq!(store.delete(999)?, 0);
+        let ids: Vec<i64> = store
+            .list("needle", 0)?
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(ids, vec![4, 2]);
+        for table in ["formats", "thumbnails"] {
+            let count: i64 = store.0.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE entry_id IN (1,3)"),
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(count, 0);
+        }
+        assert_eq!(store.prune(u32::MAX, 172800)?, 0);
+        Ok(())
+    }
     #[test]
     fn thumbnail_cache_survives_reopen_preserves_original_and_cascades() -> Result<()> {
         let stamp = std::time::SystemTime::now()

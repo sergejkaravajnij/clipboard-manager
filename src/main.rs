@@ -49,6 +49,9 @@ const PREVIEW_LANGUAGE: usize = 16;
 const CANCEL_SETTINGS: usize = 17;
 const THUMBNAILS_READY: usize = 18;
 const TOGGLE: usize = 19;
+const DELETE: usize = 20;
+const CLEANUP: usize = 21;
+const DELETE_ID: usize = 110;
 const SEARCH_ID: usize = 101;
 const LIST_ID: usize = 102;
 const COPY_ID: usize = 103;
@@ -57,6 +60,7 @@ const PREV_ID: usize = 105;
 const SETTINGS_ID: usize = 109;
 const TIMER_CAPTURE: usize = 1;
 const TIMER_SEARCH: usize = 2;
+const TIMER_CLEANUP: usize = 3;
 
 struct App {
     hwnd: HWND,
@@ -67,6 +71,7 @@ struct App {
     image_state: std::rc::Rc<image::ImageState>,
     status: HWND,
     copy: HWND,
+    delete: HWND,
     next: HWND,
     prev: HWND,
     store: Store,
@@ -143,6 +148,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 return 0;
             }
             WM_TIMER => {
+                if w == TIMER_CLEANUP {
+                    PostMessageW(hwnd, ACTION, CLEANUP, 0);
+                    return 0;
+                }
                 KillTimer(hwnd, w);
                 PostMessageW(
                     hwnd,
@@ -160,6 +169,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     (LIST_ID, n) if n == LBN_SELCHANGE as usize => SELECT,
                     (LIST_ID, n) if n == LBN_DBLCLK as usize => COPY,
                     (COPY_ID, _) => COPY,
+                    (DELETE_ID, _) => DELETE,
                     (NEXT_ID, _) => NEXT,
                     (PREV_ID, _) => PREV,
                     (SETTINGS_ID, _) => SETTINGS,
@@ -378,7 +388,7 @@ impl App {
             let copy = control(
                 hwnd,
                 "BUTTON",
-                &tr("Copy · Enter", "Скопировать · Enter"),
+                &tr("Copy", "Копировать"),
                 WS_TABSTOP,
                 COPY_ID,
                 font,
@@ -389,6 +399,14 @@ impl App {
                 &tr("← Newer", "← Новее"),
                 WS_TABSTOP,
                 PREV_ID,
+                font,
+            );
+            let delete = control(
+                hwnd,
+                "BUTTON",
+                &tr("Delete", "Удалить"),
+                WS_TABSTOP,
+                DELETE_ID,
                 font,
             );
             let next = control(
@@ -408,7 +426,7 @@ impl App {
                 font,
             );
             let settings_window = settings_window::SettingsWindow::create(hwnd, font)?;
-            if [search, list, preview, status, copy, prev, next]
+            if [search, list, preview, status, copy, delete, prev, next]
                 .iter()
                 .any(|h| h.is_null())
             {
@@ -443,6 +461,7 @@ impl App {
                 image_state,
                 status,
                 copy,
+                delete,
                 next,
                 prev,
                 store,
@@ -473,6 +492,8 @@ impl App {
                 app.report(&e.to_string());
             }
             PostMessageW(hwnd, ACTION, CAPTURE, 0);
+            app.action(CLEANUP);
+            SetTimer(hwnd, TIMER_CLEANUP, 3600000, None);
             Ok(app)
         }
     }
@@ -521,7 +542,8 @@ impl App {
             MoveWindow(self.status, 12, height - 56, width - 24, 20, 1);
             MoveWindow(self.prev, 12, height - 32, 105, 28, 1);
             MoveWindow(self.next, 125, height - 32, 105, 28, 1);
-            MoveWindow(self.copy, width - 217, height - 32, 205, 28, 1);
+            MoveWindow(self.delete, width - 217, height - 32, 88, 28, 1);
+            MoveWindow(self.copy, width - 121, height - 32, 109, 28, 1);
         }
     }
 
@@ -594,6 +616,7 @@ impl App {
                 EnableWindow(self.prev, (self.offset > 0) as i32);
                 EnableWindow(self.next, (self.rows.len() == PAGE_SIZE) as i32);
                 EnableWindow(self.copy, (!self.rows.is_empty()) as i32);
+                EnableWindow(self.delete, (!self.rows.is_empty()) as i32);
                 self.selection();
                 let total = self.store.count().unwrap_or_default();
                 let label = if self.rows.is_empty() {
@@ -643,8 +666,49 @@ impl App {
     unsafe fn action(&mut self, action: usize) {
         unsafe {
             match action {
+                CLEANUP => {
+                    let result = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| e.into())
+                        .and_then(|now| {
+                            self.store
+                                .prune(self.preferences.retention_days, now.as_secs() as i64)
+                        });
+                    match result {
+                        Ok(removed) if removed > 0 && self.visible => {
+                            self.offset = 0;
+                            self.refresh();
+                        }
+                        Err(e) => self.report(&e.to_string()),
+                        _ => {}
+                    }
+                }
+                DELETE => {
+                    let selected = SendMessageW(self.list, LB_GETCURSEL, 0, 0);
+                    if let Some(row) = self.rows.get(selected as usize) {
+                        match self.store.delete(row.id) {
+                            Ok(_) => {
+                                if self.rows.len() == 1 && self.offset > 0 {
+                                    self.offset = self.offset.saturating_sub(PAGE_SIZE);
+                                }
+                                self.refresh();
+                                if !self.rows.is_empty() {
+                                    SendMessageW(
+                                        self.list,
+                                        LB_SETCURSEL,
+                                        (selected as usize).min(self.rows.len() - 1),
+                                        0,
+                                    );
+                                    self.selection();
+                                }
+                            }
+                            Err(e) => self.report(&e.to_string()),
+                        }
+                    }
+                }
                 TOGGLE => self.action(if self.visible { HIDE } else { SHOW }),
                 SHOW => {
+                    self.action(CLEANUP);
                     self.visible = true;
                     self.offset = 0;
                     self.filter.clear();
@@ -847,7 +911,13 @@ impl App {
                     .settings_window
                     .translate(self.settings_window.selected_language()),
                 SAVE_SETTINGS => {
-                    let candidate = self.settings_window.candidate();
+                    let candidate = match self.settings_window.candidate() {
+                        Ok(candidate) => candidate,
+                        Err(e) => {
+                            self.settings_window.error(&e.to_string());
+                            return;
+                        }
+                    };
                     match self
                         .registration
                         .apply(candidate, Some(&self.preferences_path))
@@ -857,6 +927,7 @@ impl App {
                             i18n::set(candidate.language);
                             self.translate();
                             ShowWindow(self.settings_window.hwnd, SW_HIDE);
+                            self.action(CLEANUP);
                         }
                         Err(e) => {
                             let previous = i18n::current();
@@ -880,6 +951,10 @@ impl App {
                 return false;
             }
             let key = msg.wParam as u16;
+            if key == VK_DELETE && msg.hwnd == self.list {
+                PostMessageW(self.hwnd, ACTION, DELETE, 0);
+                return true;
+            }
             if key == VK_ESCAPE {
                 PostMessageW(self.hwnd, ACTION, HIDE, 0);
                 return true;
@@ -930,7 +1005,8 @@ impl App {
         unsafe {
             for (h, en, ru) in [
                 (self.hwnd, "Clipboard history", "Буфер обмена — история"),
-                (self.copy, "Copy · Enter", "Скопировать · Enter"),
+                (self.copy, "Copy", "Копировать"),
+                (self.delete, "Delete", "Удалить"),
                 (self.prev, "← Newer", "← Новее"),
                 (self.next, "Older →", "Старее →"),
                 (self.settings_button, "Settings", "Настройки"),
