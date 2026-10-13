@@ -184,17 +184,21 @@ pub fn message(text: &str) -> String {
 }
 
 pub fn preview(text: &str, generated: bool) -> String {
-    if let Some((body, formats)) = text.rsplit_once("\r\n\r\nФорматы: ") {
+    if let Some((body, metadata)) = text.rsplit_once("\r\n\r\nФорматы: ") {
         let body = if generated {
             current().generated(body)
         } else {
             body.into()
         };
-        format!(
-            "{body}\r\n\r\n{}: {}",
-            tr("Formats", "Форматы"),
-            message(formats)
-        )
+        if let Some((_, warning)) = metadata.split_once("\r\nНе сохранено: ") {
+            format!(
+                "{body}\r\n\r\n{}{}",
+                message("Не сохранено: "),
+                message(warning)
+            )
+        } else {
+            body
+        }
     } else if generated {
         current().generated(text)
     } else {
@@ -213,11 +217,11 @@ mod tests {
                 "Изображение is copied text\r\n\r\nФорматы: Unicode text",
                 false
             ),
-            "Изображение is copied text\r\n\r\nFormats: Unicode text"
+            "Изображение is copied text"
         );
         assert_eq!(
             preview("Изображение 10 × 20\r\n\r\nФорматы: DIB image", true),
-            "Image 10 × 20\r\n\r\nFormats: DIB image"
+            "Image 10 × 20"
         );
         set(Language::Russian);
         assert_eq!(
