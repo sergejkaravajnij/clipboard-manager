@@ -3,7 +3,7 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class ClipboardManagerTestUi {
-    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string className, string title);
+    [DllImport("user32.dll", EntryPoint="FindWindowW", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string className, IntPtr title);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window, int id);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam);
@@ -22,7 +22,7 @@ for ($iteration = 0; $iteration -lt 2; $iteration++) {
         $window = [IntPtr]::Zero
         for ($attempt = 0; $attempt -lt 50; $attempt++) {
             Start-Sleep -Milliseconds 100
-            $window = [ClipboardManagerTestUi]::FindWindow('RustClipboardManagerWindow', 'Буфер обмена — история')
+            $window = [ClipboardManagerTestUi]::FindWindow('ClipboardManagerWindow', [IntPtr]::Zero)
             if ($window -ne [IntPtr]::Zero) { break }
             if ($process.HasExited) { throw 'Release process exited unexpectedly.' }
         }

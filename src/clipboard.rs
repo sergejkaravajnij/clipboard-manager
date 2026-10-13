@@ -245,6 +245,7 @@ pub fn capture(store: &mut Store, owner: HWND) -> Result<Option<i64>> {
     if ordinal == 0 && warnings.is_empty() {
         return Ok(None);
     }
+    let generated = text.is_none() && files.is_none();
     let content = text
         .or(files)
         .unwrap_or_else(|| image.unwrap_or_else(|| format!("Данные: {}", names.join(", "))));
@@ -262,7 +263,17 @@ pub fn capture(store: &mut Store, owner: HWND) -> Result<Option<i64>> {
         "UPDATE entries SET title=?, search=?, preview=?, bytes=?, formats=? WHERE id=?",
         params![
             title,
-            content.to_lowercase(),
+            if generated {
+                format!(
+                    "{} {}",
+                    content.to_lowercase(),
+                    crate::i18n::Language::English
+                        .generated(&content)
+                        .to_lowercase()
+                )
+            } else {
+                content.to_lowercase()
+            },
             preview,
             bytes,
             ordinal,

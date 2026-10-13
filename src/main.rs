@@ -1,12 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod clipboard;
+mod i18n;
 mod image;
+mod preferences;
+mod settings_window;
 mod startup;
 mod store;
 #[cfg(test)]
 mod windows_tests;
 
 use clipboard::wide;
+use i18n::tr;
+use preferences::{Preferences, Registration};
 use std::{
     path::PathBuf,
     ptr::{null, null_mut},
@@ -19,7 +24,7 @@ use windows_sys::Win32::{
     UI::{Controls::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
 };
 
-const CLASS: &str = "RustClipboardManagerWindow";
+const CLASS: &str = "ClipboardManagerWindow";
 const TRAY: u32 = WM_APP + 1;
 const ACTION: u32 = WM_APP + 2;
 const SHOW: usize = 1;
@@ -35,11 +40,16 @@ const NEXT: usize = 10;
 const PREV: usize = 11;
 const EXIT: usize = 12;
 const STARTUP: usize = 13;
+const SETTINGS: usize = 14;
+const SAVE_SETTINGS: usize = 15;
+const PREVIEW_LANGUAGE: usize = 16;
+const CANCEL_SETTINGS: usize = 17;
 const SEARCH_ID: usize = 101;
 const LIST_ID: usize = 102;
 const COPY_ID: usize = 103;
 const NEXT_ID: usize = 104;
 const PREV_ID: usize = 105;
+const SETTINGS_ID: usize = 109;
 const TIMER_CAPTURE: usize = 1;
 const TIMER_SEARCH: usize = 2;
 
@@ -66,6 +76,11 @@ struct App {
     retries: u32,
     visible: bool,
     db_path: PathBuf,
+    preferences: Preferences,
+    preferences_path: PathBuf,
+    registration: Registration,
+    settings_window: settings_window::SettingsWindow,
+    settings_button: HWND,
 }
 
 fn data_path() -> Result<PathBuf> {
@@ -77,7 +92,7 @@ fn data_path() -> Result<PathBuf> {
     }
     Ok(
         PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA отсутствует")?)
-            .join("RustClipboardManager"),
+            .join("ClipboardManager"),
     )
 }
 
@@ -140,6 +155,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     (COPY_ID, _) => COPY,
                     (NEXT_ID, _) => NEXT,
                     (PREV_ID, _) => PREV,
+                    (SETTINGS_ID, _) => SETTINGS,
                     _ => return DefWindowProcW(hwnd, msg, w, l),
                 };
                 PostMessageW(hwnd, ACTION, action, 0);
@@ -152,6 +168,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 }
                 if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                     PostMessageW(hwnd, ACTION, MENU, 0);
+                }
+                return 0;
+            }
+            WM_HOTKEY => {
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const App;
+                if !ptr.is_null()
+                    && (*ptr).registration.id != 0
+                    && (*ptr).registration.id == w as i32
+                {
+                    PostMessageW(hwnd, ACTION, SHOW, 0);
                 }
                 return 0;
             }
@@ -208,6 +234,12 @@ fn window_text(hwnd: HWND) -> String {
 
 impl App {
     unsafe fn create(store: Store, db_path: PathBuf) -> Result<Box<Self>> {
+        let preferences_path = db_path.with_file_name("settings.ini");
+        let preferences = Preferences::load(&preferences_path).unwrap_or_else(|e| {
+            log_error(&db_path, &format!("Settings: {e}"));
+            Preferences::default()
+        });
+        i18n::set(preferences.language);
         unsafe {
             let instance = GetModuleHandleW(null());
             let class_name = wide(CLASS);
@@ -225,7 +257,7 @@ impl App {
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 wide(CLASS).as_ptr(),
-                wide("Буфер обмена — история").as_ptr(),
+                wide(&tr("Clipboard history", "Буфер обмена — история")).as_ptr(),
                 WS_OVERLAPPEDWINDOW,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -267,7 +299,11 @@ impl App {
                 search,
                 EM_SETCUEBANNER,
                 1,
-                wide("Начните печатать для поиска…").as_ptr() as isize,
+                wide(&tr(
+                    "Start typing to search…",
+                    "Начните печатать для поиска…",
+                ))
+                .as_ptr() as isize,
             );
             let list = control(
                 hwnd,
@@ -307,13 +343,36 @@ impl App {
             let copy = control(
                 hwnd,
                 "BUTTON",
-                "Скопировать · Enter",
+                &tr("Copy · Enter", "Скопировать · Enter"),
                 WS_TABSTOP,
                 COPY_ID,
                 font,
             );
-            let prev = control(hwnd, "BUTTON", "← Новее", WS_TABSTOP, PREV_ID, font);
-            let next = control(hwnd, "BUTTON", "Старее →", WS_TABSTOP, NEXT_ID, font);
+            let prev = control(
+                hwnd,
+                "BUTTON",
+                &tr("← Newer", "← Новее"),
+                WS_TABSTOP,
+                PREV_ID,
+                font,
+            );
+            let next = control(
+                hwnd,
+                "BUTTON",
+                &tr("Older →", "Старее →"),
+                WS_TABSTOP,
+                NEXT_ID,
+                font,
+            );
+            let settings_button = control(
+                hwnd,
+                "BUTTON",
+                &tr("Settings", "Настройки"),
+                WS_TABSTOP,
+                SETTINGS_ID,
+                font,
+            );
+            let settings_window = settings_window::SettingsWindow::create(hwnd, font)?;
             if [search, list, preview, status, copy, prev, next]
                 .iter()
                 .any(|h| h.is_null())
@@ -330,7 +389,10 @@ impl App {
                 hIcon: LoadIconW(null_mut(), IDI_APPLICATION),
                 ..Default::default()
             };
-            let tip = wide("Буфер обмена — нажмите для истории");
+            let tip = wide(&tr(
+                "Clipboard Manager — click for history",
+                "Буфер обмена — нажмите для истории",
+            ));
             tray.szTip[..tip.len()].copy_from_slice(&tip);
             if Shell_NotifyIconW(NIM_ADD, &tray) == 0 {
                 DestroyWindow(hwnd);
@@ -359,10 +421,18 @@ impl App {
                 retries: 0,
                 visible: false,
                 db_path,
+                preferences,
+                preferences_path,
+                registration: Registration::new(hwnd),
+                settings_window,
+                settings_button,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, app.as_mut() as *mut Self as isize);
             if AddClipboardFormatListener(hwnd) == 0 {
                 return Err("Не удалось подписаться на изменения буфера".into());
+            }
+            if let Err(e) = app.registration.apply(preferences, None) {
+                app.report(&e.to_string());
             }
             PostMessageW(hwnd, ACTION, CAPTURE, 0);
             Ok(app)
@@ -372,7 +442,7 @@ impl App {
     fn report(&self, message: &str) {
         log_error(&self.db_path, message);
         unsafe {
-            SetWindowTextW(self.status, wide(message).as_ptr());
+            SetWindowTextW(self.status, wide(&i18n::message(message)).as_ptr());
         }
     }
 
@@ -382,7 +452,8 @@ impl App {
             GetClientRect(self.hwnd, &mut rect);
             let width = rect.right.max(380);
             let height = rect.bottom.max(300);
-            MoveWindow(self.search, 12, 12, width - 24, 32, 1);
+            MoveWindow(self.search, 12, 12, width - 140, 32, 1);
+            MoveWindow(self.settings_button, width - 116, 12, 104, 32, 1);
             let list_height = ((height - 140) * 55 / 100).max(80);
             MoveWindow(self.list, 12, 54, width - 24, list_height, 1);
             let image_visible = self.image_state.borrow().is_some();
@@ -441,12 +512,21 @@ impl App {
                 self.selection();
                 let total = self.store.count().unwrap_or_default();
                 let label = if self.rows.is_empty() {
-                    format!("Ничего не найдено · Всего записей: {total}")
+                    format!(
+                        "{} · {}: {total}",
+                        tr("No matches", "Ничего не найдено"),
+                        tr("Total entries", "Всего записей")
+                    )
                 } else {
                     format!(
-                        "{}–{} · Всего записей: {total} · Двойной щелчок / Enter — скопировать",
+                        "{}–{} · {}: {total} · {}",
                         self.offset + 1,
-                        self.offset + self.rows.len()
+                        self.offset + self.rows.len(),
+                        tr("Total entries", "Всего записей"),
+                        tr(
+                            "Double-click / Enter to copy",
+                            "Двойной щелчок / Enter — скопировать"
+                        )
                     )
                 };
                 SetWindowTextW(self.status, wide(&label).as_ptr());
@@ -565,7 +645,18 @@ impl App {
                 }
                 MENU => {
                     let menu = CreatePopupMenu();
-                    AppendMenuW(menu, MF_STRING, SHOW, wide("История буфера").as_ptr());
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        SHOW,
+                        wide(&tr("Clipboard history", "История буфера")).as_ptr(),
+                    );
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        SETTINGS,
+                        wide(&tr("Settings…", "Настройки…")).as_ptr(),
+                    );
                     AppendMenuW(
                         menu,
                         MF_STRING
@@ -575,10 +666,10 @@ impl App {
                                 MF_UNCHECKED
                             },
                         STARTUP,
-                        wide("Запускать с Windows").as_ptr(),
+                        wide(&tr("Start with Windows", "Запускать с Windows")).as_ptr(),
                     );
                     AppendMenuW(menu, MF_SEPARATOR, 0, null());
-                    AppendMenuW(menu, MF_STRING, EXIT, wide("Выход").as_ptr());
+                    AppendMenuW(menu, MF_STRING, EXIT, wide(&tr("Exit", "Выход")).as_ptr());
                     let mut p = POINT::default();
                     GetCursorPos(&mut p);
                     SetForegroundWindow(self.hwnd);
@@ -605,12 +696,67 @@ impl App {
                         self.report(&e.to_string());
                     }
                 }
+                SETTINGS => {
+                    if IsWindowVisible(self.settings_window.hwnd) != 0 {
+                        SetForegroundWindow(self.settings_window.hwnd);
+                        return;
+                    }
+                    // Let the hotkey field receive the currently assigned combination.
+                    let disabled = Preferences {
+                        hotkey: preferences::Hotkey {
+                            key: 0,
+                            ..self.preferences.hotkey
+                        },
+                        ..self.preferences
+                    };
+                    let unavailable = self.preferences.hotkey.key != 0 && self.registration.id == 0;
+                    let _ = self.registration.apply(disabled, None);
+                    self.settings_window.show(self.preferences);
+                    if unavailable {
+                        self.settings_window.error(&tr(
+                            "The saved shortcut is unavailable. Choose another combination.",
+                            "Сохранённый хоткей недоступен. Выберите другое сочетание.",
+                        ));
+                    }
+                }
+                CANCEL_SETTINGS => {
+                    ShowWindow(self.settings_window.hwnd, SW_HIDE);
+                    if let Err(e) = self.registration.apply(self.preferences, None) {
+                        self.report(&e.to_string());
+                    }
+                }
+                PREVIEW_LANGUAGE => self
+                    .settings_window
+                    .translate(self.settings_window.selected_language()),
+                SAVE_SETTINGS => {
+                    let candidate = self.settings_window.candidate();
+                    match self
+                        .registration
+                        .apply(candidate, Some(&self.preferences_path))
+                    {
+                        Ok(()) => {
+                            self.preferences = candidate;
+                            i18n::set(candidate.language);
+                            self.translate();
+                            ShowWindow(self.settings_window.hwnd, SW_HIDE);
+                        }
+                        Err(e) => {
+                            let previous = i18n::current();
+                            i18n::set(candidate.language);
+                            self.settings_window.error(&i18n::message(&e.to_string()));
+                            i18n::set(previous);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
     }
 
     unsafe fn key(&self, msg: &MSG) -> bool {
+        if self.settings_window.contains(msg.hwnd) {
+            return self.settings_window.key(msg);
+        }
         unsafe {
             if !self.visible || msg.message != WM_KEYDOWN {
                 return false;
@@ -661,6 +807,42 @@ impl App {
     }
 }
 
+impl App {
+    fn translate(&mut self) {
+        unsafe {
+            for (h, en, ru) in [
+                (self.hwnd, "Clipboard history", "Буфер обмена — история"),
+                (self.copy, "Copy · Enter", "Скопировать · Enter"),
+                (self.prev, "← Newer", "← Новее"),
+                (self.next, "Older →", "Старее →"),
+                (self.settings_button, "Settings", "Настройки"),
+            ] {
+                SetWindowTextW(h, wide(&tr(en, ru)).as_ptr());
+            }
+            SendMessageW(
+                self.search,
+                EM_SETCUEBANNER,
+                1,
+                wide(&tr(
+                    "Start typing to search…",
+                    "Начните печатать для поиска…",
+                ))
+                .as_ptr() as isize,
+            );
+            let tip = wide(&tr(
+                "Clipboard Manager — click for history",
+                "Буфер обмена — нажмите для истории",
+            ));
+            self.tray.szTip.fill(0);
+            self.tray.szTip[..tip.len()].copy_from_slice(&tip);
+            Shell_NotifyIconW(NIM_MODIFY, &self.tray);
+            if self.visible {
+                self.refresh();
+            }
+        }
+    }
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         unsafe {
@@ -678,7 +860,7 @@ fn run() -> Result<()> {
     let dir = data_path()?;
     std::fs::create_dir_all(&dir)?;
     let db = dir.join("history.sqlite");
-    let mutex = unsafe { CreateMutexW(null(), 0, wide("Local\\RustClipboardManager.v1").as_ptr()) };
+    let mutex = unsafe { CreateMutexW(null(), 0, wide("Local\\ClipboardManager.v1").as_ptr()) };
     if mutex.is_null() {
         return Err("Не удалось создать блокировку приложения".into());
     }
@@ -711,7 +893,12 @@ fn run() -> Result<()> {
                 msg.message,
                 WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR | WM_SYSCHAR
             );
-            if !app.key(&msg) && (!keyboard || IsDialogMessageW(app.hwnd, &msg) == 0) {
+            let dialog = if app.settings_window.contains(msg.hwnd) {
+                app.settings_window.hwnd
+            } else {
+                app.hwnd
+            };
+            if !app.key(&msg) && (!keyboard || IsDialogMessageW(dialog, &msg) == 0) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -730,8 +917,8 @@ fn main() {
         unsafe {
             MessageBoxW(
                 null_mut(),
-                wide(&e.to_string()).as_ptr(),
-                wide("Менеджер буфера обмена").as_ptr(),
+                wide(&i18n::message(&e.to_string())).as_ptr(),
+                wide(&tr("Clipboard Manager", "Менеджер буфера обмена")).as_ptr(),
                 MB_OK | MB_ICONERROR,
             );
         }

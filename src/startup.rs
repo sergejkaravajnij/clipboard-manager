@@ -3,7 +3,7 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::System::Registry::*;
 
 const RUN: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const NAME: &str = "RustClipboardManager";
+const NAME: &str = "ClipboardManager";
 
 pub fn enabled() -> bool {
     unsafe {

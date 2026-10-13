@@ -66,8 +66,7 @@ fn windows_clipboard_tray_search_restore_and_restart() -> Result<()> {
     };
     let html = unsafe { RegisterClipboardFormatW(wide("HTML Format").as_ptr()) };
     let rtf = unsafe { RegisterClipboardFormatW(wide("Rich Text Format").as_ptr()) };
-    let custom =
-        unsafe { RegisterClipboardFormatW(wide("RustClipboardManager.Test.Binary").as_ptr()) };
+    let custom = unsafe { RegisterClipboardFormatW(wide("ClipboardManager.Test.Binary").as_ptr()) };
     let text = utf16("Привет — clipboard test 100%_\\\r\nВторая строка");
     let html_bytes = b"Version:0.9\r\n<html><body><b>test</b></body></html>\0".to_vec();
     let rtf_bytes = b"{\\rtf1\\ansi test} \0".to_vec();
@@ -309,6 +308,42 @@ fn windows_clipboard_tray_search_restore_and_restart() -> Result<()> {
     assert_eq!(reopened.count()?, persisted);
     assert_eq!(reopened.format(image_id, 0)?.data, dib);
     println!("PASS disk persistence after reopen; paged history");
+    assert_eq!(window_text(app.hwnd), "Clipboard history");
+    unsafe {
+        app.action(SETTINGS);
+    }
+    assert_ne!(unsafe { IsWindowVisible(app.settings_window.hwnd) }, 0);
+    assert_eq!(
+        app.registration.id, 0,
+        "Shortcut must be released while editing it"
+    );
+    unsafe {
+        SendMessageW(app.settings_window.language, CB_SETCURSEL, 1, 0);
+        SendMessageW(app.settings_window.hotkey, HKM_SETHOTKEY, 0, 0);
+        app.action(SAVE_SETTINGS);
+    }
+    assert_eq!(app.preferences.language, i18n::Language::Russian);
+    assert_eq!(window_text(app.hwnd), "Буфер обмена — история");
+    assert_eq!(Preferences::load(&app.preferences_path)?, app.preferences);
+    unsafe {
+        app.action(SETTINGS);
+        SendMessageW(app.settings_window.language, CB_SETCURSEL, 0, 0);
+        app.action(CANCEL_SETTINGS);
+    }
+    assert_eq!(
+        app.preferences.language,
+        i18n::Language::Russian,
+        "Cancel must discard language changes"
+    );
+    unsafe {
+        app.action(SETTINGS);
+        SendMessageW(app.settings_window.language, CB_SETCURSEL, 0, 0);
+        app.action(SAVE_SETTINGS);
+    }
+    assert_eq!(window_text(app.hwnd), "Clipboard history");
+    println!(
+        "PASS settings window, English/Russian switch, hotkey disabling, cancellation and disk preferences"
+    );
     // Restore the user's clipboard before destroying its temporary owner window.
     drop(restore);
     unsafe {

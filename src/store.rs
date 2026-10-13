@@ -84,7 +84,9 @@ impl Store {
             "search LIKE ? ESCAPE '\\'"
         };
         let sql = format!(
-            "SELECT id, strftime('%d.%m %H:%M', created, 'unixepoch', 'localtime'), title, bytes FROM entries WHERE {predicate} ORDER BY id DESC LIMIT ? OFFSET ?"
+            "SELECT id, strftime('%d.%m %H:%M', created, 'unixepoch', 'localtime'), title, bytes,
+             NOT EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (13,15))
+             FROM entries WHERE {predicate} ORDER BY id DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = self.0.prepare(&sql)?;
         let rows = stmt.query_map(params![pattern, PAGE_SIZE as i64, offset as i64], |r| {
@@ -94,7 +96,14 @@ impl Store {
                 label: format!(
                     "{}   {}   [{}]",
                     r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
+                    {
+                        let title = r.get::<_, String>(2)?;
+                        if r.get::<_, bool>(4)? {
+                            crate::i18n::current().generated(&title)
+                        } else {
+                            title
+                        }
+                    },
                     size_label(bytes)
                 ),
             })
@@ -103,9 +112,8 @@ impl Store {
     }
 
     pub fn preview(&self, id: i64) -> Result<String> {
-        Ok(self
-            .0
-            .query_row("SELECT preview FROM entries WHERE id=?", [id], |r| r.get(0))?)
+        let (text,generated):(String,bool)=self.0.query_row("SELECT preview,NOT EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (13,15)) FROM entries WHERE id=?",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        Ok(crate::i18n::preview(&text, generated))
     }
 
     pub fn count(&self) -> Result<i64> {
@@ -145,11 +153,15 @@ impl Store {
 
 fn size_label(bytes: i64) -> String {
     if bytes >= 1024 * 1024 {
-        format!("{:.1} МБ", bytes as f64 / 1048576.0)
+        format!(
+            "{:.1} {}",
+            bytes as f64 / 1048576.0,
+            crate::i18n::tr("MB", "МБ")
+        )
     } else if bytes >= 1024 {
-        format!("{} КБ", bytes / 1024)
+        format!("{} {}", bytes / 1024, crate::i18n::tr("KB", "КБ"))
     } else {
-        format!("{bytes} Б")
+        format!("{bytes} {}", crate::i18n::tr("B", "Б"))
     }
 }
 
