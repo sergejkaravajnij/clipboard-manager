@@ -48,6 +48,7 @@ const SAVE_SETTINGS: usize = 15;
 const PREVIEW_LANGUAGE: usize = 16;
 const CANCEL_SETTINGS: usize = 17;
 const THUMBNAILS_READY: usize = 18;
+const TOGGLE: usize = 19;
 const SEARCH_ID: usize = 101;
 const LIST_ID: usize = 102;
 const COPY_ID: usize = 103;
@@ -196,7 +197,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     && (*ptr).registration.id != 0
                     && (*ptr).registration.id == w as i32
                 {
-                    PostMessageW(hwnd, ACTION, SHOW, 0);
+                    PostMessageW(hwnd, ACTION, TOGGLE, 0);
                 }
                 return 0;
             }
@@ -642,6 +643,7 @@ impl App {
     unsafe fn action(&mut self, action: usize) {
         unsafe {
             match action {
+                TOGGLE => self.action(if self.visible { HIDE } else { SHOW }),
                 SHOW => {
                     self.visible = true;
                     self.offset = 0;
