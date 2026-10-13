@@ -1,64 +1,66 @@
-# Менеджер буфера обмена
+# Clipboard Manager
 
-Небольшое приложение для Windows 11 на Rust и Win32. Работает в трее, сохраняет историю локально в SQLite. Для запуска готового exe Rust, .NET и WebView не нужны.
+[Русская версия](README.ru.md)
 
-## Использование
+A lightweight Windows 11 application built with Rust and Win32. Runs in the system tray and stores clipboard history locally in SQLite. The compiled executable requires no Rust, .NET, or WebView installation.
 
-- Левый щелчок по значку: открыть историю.
-- Начните печатать: поиск по содержимому и именам файлов, без учёта регистра.
-- Стрелки вверх/вниз: выбрать запись.
-- Enter, двойной щелчок или кнопка «Скопировать»: восстановить запись в буфер.
-- Escape или закрытие окна: скрыть историю, продолжить запись.
-- Правый щелчок: история, автозапуск с Windows, выход.
-- Кнопки «Новее» и «Старее»: страницы по 100 записей.
+## Usage
 
-Слева расположен список содержимого без времени и размера записи; справа — предпросмотр текста или изображения. Поиск выполняется по всей базе истории, а не только по текущей странице.
+- Left-click the tray icon to open history.
+- Start typing to search clipboard contents and file names, ignoring case.
+- Use Up/Down to select an entry.
+- Press Enter, double-click, or click **Copy** to restore an entry to the clipboard.
+- Press Escape or close the window to hide history and keep recording.
+- Right-click the tray icon to access history, startup with Windows, and exit.
+- Use **Newer** and **Older** to navigate pages of 100 entries.
 
-У изображений в списке есть миниатюры до 64 × 48 пикселей. Они создаются в фоне и сохраняются в таблице `thumbnails` той же базы SQLite; оригинальные данные не изменяются. Для старых записей миниатюры создаются при открытии страницы. В памяти находится только текущая страница; при скрытии окна миниатюры освобождаются. Текстовые строки остаются компактными, строки изображений выше.
+The content list is on the left, without timestamps or entry sizes; the text or image preview is on the right. Search covers the entire database, not just the current page.
 
-## Язык и горячая клавиша
+Images in the list have thumbnails up to 64 × 48 pixels. They are generated in the background and stored in the `thumbnails` table of the same SQLite database; original data remains unchanged. For older entries, thumbnails are generated when their page is opened. Only the current page is held in memory; thumbnails are released when the window is hidden. Text rows stay compact, while image rows are taller.
 
-В **Settings** задайте срок хранения в днях: записи старше указанного срока удаляются автоматически. `0` (по умолчанию) — хранить без ограничения. Очистка выполняется при запуске, открытии истории, сохранении настроек и каждый час работы приложения. Возраст считается с момента копирования записи. Удаляются также сохранённые форматы, миниатюры и данные поиска; освободившееся место внутри SQLite используется для новых записей.
+## Language and keyboard shortcut
 
-Для удаления отдельной записи выберите её и нажмите **Delete** внизу окна или клавишу `Delete`, когда фокус находится в списке. Удаление из истории не меняет текущий буфер обмена.
+Set a retention period in days in **Settings** to automatically delete older entries. `0` (the default) keeps history indefinitely. Cleanup runs at startup, when opening history, when saving settings, and every hour while the application is running. Entry age is measured from the time it was copied. Associated formats, thumbnails, and search data are also removed; freed space within SQLite is reused for new entries.
 
-По умолчанию интерфейс английский, глобальный хоткей — `Ctrl+Alt+V`. Хоткей открывает скрытое окно истории и скрывает открытое при повторном нажатии. Откройте **Settings** кнопкой в окне истории или из меню трея. В настройках доступны **English** и **Русский**; язык меняется сразу после сохранения, без перезапуска.
+To delete an individual entry, select it and click **Delete** at the bottom of the window, or press the Delete key while the list has focus. Deleting an entry does not change the current clipboard.
 
-Для изменения хоткея нажмите нужное сочетание в поле **Open clipboard history**. Дополнительно можно включить клавишу Windows. **Clear** отключает хоткей. **Save** сохраняет выбор; **Cancel** и Escape отменяют изменения. Сочетания, занятые другими приложениями или зарезервированные Windows, не сохраняются: появляется сообщение с предложением выбрать другое.
+The default interface language is English, and the default global shortcut is `Ctrl+Alt+V`. The shortcut opens a hidden history window and hides an open one when pressed again. Open **Settings** using the button in the history window or the tray menu. Choose **English** or **Русский**; the language changes immediately after saving, without a restart.
 
-Во время редактирования настроек текущий хоткей временно освобождается, чтобы поле могло принять это же сочетание. После сохранения или отмены он снова регистрируется. Настройки хранятся в `%LOCALAPPDATA%\ClipboardManager\settings.ini` и восстанавливаются при следующем запуске. Копируемый текст не переводится: локализуются только интерфейс и служебные подписи.
+To change the shortcut, press the desired combination in the **Open clipboard history** field. You can also include the Windows key. **Clear** disables the shortcut. **Save** applies your choices; **Cancel** and Escape discard changes. Combinations used by other applications or reserved by Windows cannot be saved; a message asks you to choose another combination.
 
-История: `%LOCALAPPDATA%\ClipboardManager\history.sqlite`. Ошибки: `errors.log` в той же папке. История не удаляется при выходе. Файлы SQLite `-wal` и `-shm`, если существуют, относятся к той же базе; не удаляйте их во время работы приложения.
+While editing settings, the current shortcut is temporarily unregistered so the field can capture that same combination. It is registered again after saving or cancelling. Settings are stored in `%LOCALAPPDATA%\ClipboardManager\settings.ini` and restored on the next launch. Copied text is never translated; only the interface and metadata labels are localized.
 
-## Данные и память
+History: `%LOCALAPPDATA%\ClipboardManager\history.sqlite`. Errors: `errors.log` in the same folder. Exiting the application does not delete history. SQLite `-wal` and `-shm` files, when present, belong to the same database; do not delete them while the application is running.
 
-Сохраняются Unicode/ANSI-текст, HTML, RTF, DIB/DIBV5-изображения, списки файлов из Проводника, метафайлы, палитры и переносимые зарегистрированные/частные двоичные форматы. При выборе записи восстанавливаются её форматы, а не только обычный текст. Для списков файлов сохраняются пути, как в стандартном буфере Windows; сами исходные файлы не копируются в архив.
+## Data and memory
 
-Окно загружает только текущую страницу и предпросмотр выбранной записи. Кэш каждого соединения SQLite ограничен 2 МБ; фоновый обработчик миниатюр использует отдельное соединение и обрабатывает по одному исходному изображению. Изображения и исходные данные всей истории в оперативную память не загружаются. После закрытия окна предпросмотр и миниатюры текущей страницы освобождаются. Во время копирования большого объекта память временно нужна для самого объекта и его форматов.
+The application saves Unicode/ANSI text, HTML, RTF, DIB/DIBV5 images, file lists from File Explorer, metafiles, palettes, and portable registered/private binary formats. Restoring an entry restores its formats, not just plain text. File lists store paths, as the standard Windows clipboard does; the original files themselves are not copied into an archive.
 
-Поиск от трёх символов использует индекс FTS5 trigram; один-два символа ищутся непосредственно в текстовом индексе записей. Поиск работает и с кириллицей, и с буквальными `%`, `_`, `\`.
+The window loads only the current page and the selected entry's preview. Each SQLite connection has a 2 MB cache limit; the background thumbnail worker uses a separate connection and processes one original image at a time. Images and original data from the entire history are not loaded into RAM. Closing the window releases the preview and current-page thumbnails. Copying a large object temporarily requires memory for the object and its formats.
 
-Непереносимые форматы, содержащие ссылки на внутренние объекты другого процесса (`DataObject`, `Ole Private Data`, owner-display), отмечаются в предпросмотре как несохранённые. Виртуальные вложения из почтовых клиентов не входят в согласованный объём поддержки.
+Search queries of three or more characters use an FTS5 trigram index; one- or two-character queries search the entries' text index directly. Search supports Cyrillic and literal `%`, `_`, and `\` characters.
 
-## Сборка и установка
+Non-portable formats containing references to internal objects in another process (`DataObject`, `Ole Private Data`, owner-display) are marked as unsaved in the preview. Virtual attachments from email clients are outside the supported scope.
+
+## Build and installation
 
 ```powershell
 cargo build --release
 ```
 
-Готовый файл: `target\release\clipboard-manager.exe`.
+Executable: `target\release\clipboard-manager.exe`.
 
-`install.ps1` собирает приложение, копирует exe в папку проекта, включает автозапуск для текущего пользователя и запускает приложение. Права администратора не нужны. Автозапуск можно отключить через меню трея.
+`install.ps1` builds the application, copies the executable to the project folder, enables startup for the current user, and launches the application. Administrator privileges are not required. Startup can be disabled from the tray menu.
 
-Для отдельной тестовой базы:
+To use a separate test database:
 
 ```powershell
 .\clipboard-manager.exe --data-dir=C:\path\to\test-history
 ```
 
-Одновременно работает один экземпляр в текущем пользовательском сеансе. Повторный запуск открывает его историю.
+Only one instance runs in the current user session. Launching it again opens the existing instance's history.
 
-## Проверки
+## Verification
 
 ```powershell
 cargo test
@@ -66,15 +68,15 @@ cargo clippy --all-targets -- -D warnings
 cargo test windows_clipboard_tray_search_restore_and_restart -- --ignored --nocapture --test-threads=1
 ```
 
-Последняя проверка использует настоящий буфер Windows, сохраняет его содержимое в отдельную временную базу и восстанавливает после теста. Проверяются уведомления, трей, ввод фильтра, копирование из истории, точное восстановление текста/HTML/RTF/изображений/файлов/двоичных форматов, повтор при занятом буфере и хранение на диске.
+The last test uses the real Windows clipboard, saves its contents to a separate temporary database, and restores them afterward. It checks notifications, the tray, filter input, copying from history, exact restoration of text/HTML/RTF/images/files/binary formats, retries when the clipboard is busy, and disk persistence.
 
-Внешняя проверка release-процесса с 10 000 записями и объектом 64 МБ:
+External verification of the release process with 10,000 entries and a 64 MB object:
 
 ```powershell
 cargo test create_release_runtime_fixture -- --ignored --nocapture
 .\verify-runtime.ps1
 ```
 
-Отчёт: `artifacts\runtime-report.json`. Эта проверка запускает и завершает два экземпляра последовательно, проверяет сохранённый фильтр после перезапуска и измеряет память/CPU в фоне.
+Report: `artifacts\runtime-report.json`. This check launches and stops two instances sequentially, verifies that a saved filter works after restarting, and measures background memory and CPU usage.
 
-Проверено на этом компьютере: exe 1 304 576 байт; на тестовой истории из 10 000 записей и объекта 64 МБ рабочая память в фоне около 19 МБ, частная память около 2,9 МБ. За двухсекундный замер простоя процесс не использовал CPU. Поиск по индексу в 10 000 записях занял около 1,6 мс. Это результаты измерений, не фиксированные лимиты для любого содержимого буфера.
+Measurements on the development computer: executable size of 1,304,576 bytes; with a test history of 10,000 entries and a 64 MB object, background working set of approximately 19 MB and private memory of approximately 2.9 MB. The process used no CPU during a two-second idle measurement. Indexed search over 10,000 entries took approximately 1.6 ms. These are measured results, not fixed limits for all clipboard contents.
