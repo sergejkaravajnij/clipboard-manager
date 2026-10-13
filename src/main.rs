@@ -3,10 +3,12 @@ mod clipboard;
 mod i18n;
 mod icon;
 mod image;
+mod list_view;
 mod preferences;
 mod settings_window;
 mod startup;
 mod store;
+mod thumbnails;
 #[cfg(test)]
 mod windows_tests;
 
@@ -45,6 +47,7 @@ const SETTINGS: usize = 14;
 const SAVE_SETTINGS: usize = 15;
 const PREVIEW_LANGUAGE: usize = 16;
 const CANCEL_SETTINGS: usize = 17;
+const THUMBNAILS_READY: usize = 18;
 const SEARCH_ID: usize = 101;
 const LIST_ID: usize = 102;
 const COPY_ID: usize = 103;
@@ -67,6 +70,8 @@ struct App {
     prev: HWND,
     store: Store,
     rows: Vec<Row>,
+    list_state: std::rc::Rc<list_view::State>,
+    thumbnail_worker: thumbnails::Worker,
     filter: String,
     offset: usize,
     font: HFONT,
@@ -161,6 +166,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 };
                 PostMessageW(hwnd, ACTION, action, 0);
                 return 0;
+            }
+            WM_MEASUREITEM => {
+                let item = &mut *(l as *mut MEASUREITEMSTRUCT);
+                if item.CtlID == LIST_ID as u32 {
+                    list_view::measure(GetDlgItem(hwnd, LIST_ID as i32), item);
+                    return 1;
+                }
+            }
+            WM_DRAWITEM => {
+                let item = &*(l as *const DRAWITEMSTRUCT);
+                if item.CtlID == LIST_ID as u32 {
+                    return list_view::draw(item) as isize;
+                }
             }
             TRAY => {
                 let event = (l as u32) & 0xffff;
@@ -322,9 +340,17 @@ impl App {
                     | WS_HSCROLL
                     | WS_TABSTOP
                     | LBS_NOTIFY as u32
+                    | LBS_OWNERDRAWVARIABLE as u32
+                    | LBS_HASSTRINGS as u32
                     | LBS_NOINTEGRALHEIGHT as u32,
                 LIST_ID,
                 font,
+            );
+            let list_state = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            SetWindowLongPtrW(
+                list,
+                GWLP_USERDATA,
+                std::rc::Rc::as_ptr(&list_state) as isize,
             );
             let preview = control(
                 hwnd,
@@ -406,6 +432,7 @@ impl App {
                 DestroyWindow(hwnd);
                 return Err("Не удалось добавить значок в трей".into());
             }
+            let thumbnail_worker = thumbnails::Worker::new(db_path.clone(), hwnd);
             let mut app = Box::new(Self {
                 hwnd,
                 search,
@@ -419,6 +446,8 @@ impl App {
                 prev,
                 store,
                 rows: Vec::new(),
+                list_state,
+                thumbnail_worker,
                 filter: String::new(),
                 offset: 0,
                 font,
@@ -500,6 +529,30 @@ impl App {
             Ok(rows) => unsafe {
                 SendMessageW(self.list, WM_SETREDRAW, 0, 0);
                 SendMessageW(self.list, LB_RESETCONTENT, 0, 0);
+                let mut pending = Vec::new();
+                let visuals = rows
+                    .iter()
+                    .map(|row| {
+                        let thumbnail = if row.has_image {
+                            self.store
+                                .thumbnail(row.id)
+                                .ok()
+                                .flatten()
+                                .and_then(image::Image::from_dib)
+                        } else {
+                            None
+                        };
+                        if row.has_image && thumbnail.is_none() {
+                            pending.push(row.id);
+                        }
+                        list_view::Visual {
+                            label: row.label.clone(),
+                            has_image: row.has_image,
+                            thumbnail,
+                        }
+                    })
+                    .collect();
+                *self.list_state.borrow_mut() = visuals;
                 for row in &rows {
                     SendMessageW(
                         self.list,
@@ -515,7 +568,14 @@ impl App {
                     let label = wide(&row.label);
                     let mut size = SIZE::default();
                     GetTextExtentPoint32W(dc, label.as_ptr(), (label.len() - 1) as i32, &mut size);
-                    longest = longest.max(size.cx);
+                    longest = longest.max(
+                        size.cx
+                            + if row.has_image {
+                                list_view::THUMBNAIL_WIDTH + 12
+                            } else {
+                                0
+                            },
+                    );
                 }
                 SelectObject(dc, old_font);
                 ReleaseDC(self.list, dc);
@@ -526,6 +586,7 @@ impl App {
                     0,
                 );
                 self.rows = rows;
+                self.thumbnail_worker.request(pending);
                 SendMessageW(self.list, LB_SETCURSEL, 0, 0);
                 SendMessageW(self.list, WM_SETREDRAW, 1, 0);
                 InvalidateRect(self.list, null(), 1);
@@ -599,6 +660,9 @@ impl App {
                     SetWindowTextW(self.preview, wide("").as_ptr());
                     self.rows.clear();
                     self.rows.shrink_to_fit();
+                    self.list_state.borrow_mut().clear();
+                    self.list_state.borrow_mut().shrink_to_fit();
+                    self.thumbnail_worker.request(Vec::new());
                     *self.image_state.borrow_mut() = None;
                     let _ = self.store.0.execute_batch("PRAGMA shrink_memory;");
                 }
@@ -646,12 +710,14 @@ impl App {
                         return;
                     }
                     match clipboard::capture(&mut self.store, self.hwnd) {
-                        Ok(_) => {
+                        Ok(entry) => {
                             self.last_sequence = GetClipboardSequenceNumber();
                             self.retries = 0;
                             if self.visible {
                                 self.offset = 0;
                                 self.refresh();
+                            } else if let Some(id) = entry {
+                                self.thumbnail_worker.request(vec![id]);
                             }
                         }
                         Err(e) => {
@@ -746,6 +812,33 @@ impl App {
                     ShowWindow(self.settings_window.hwnd, SW_HIDE);
                     if let Err(e) = self.registration.apply(self.preferences, None) {
                         self.report(&e.to_string());
+                    }
+                }
+                THUMBNAILS_READY => {
+                    let results: Vec<_> = self.thumbnail_worker.results.try_iter().collect();
+                    let mut changed = false;
+                    for (id, result) in results {
+                        if let Err(e) = result {
+                            log_error(&self.db_path, &format!("Thumbnail: {e}"));
+                            continue;
+                        }
+                        if self.visible
+                            && let Some(index) = self.rows.iter().position(|row| row.id == id)
+                        {
+                            let thumbnail = self
+                                .store
+                                .thumbnail(id)
+                                .ok()
+                                .flatten()
+                                .and_then(image::Image::from_dib);
+                            if let Some(row) = self.list_state.borrow_mut().get_mut(index) {
+                                row.thumbnail = thumbnail;
+                                changed = true;
+                            }
+                        }
+                    }
+                    if changed {
+                        InvalidateRect(self.list, null(), 1);
                     }
                 }
                 PREVIEW_LANGUAGE => self

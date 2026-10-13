@@ -11,6 +11,7 @@ pub struct Store(pub Connection);
 pub struct Row {
     pub id: i64,
     pub label: String,
+    pub has_image: bool,
 }
 
 pub struct Format {
@@ -44,6 +45,9 @@ impl Store {
                ordinal INTEGER NOT NULL, format_id INTEGER NOT NULL,
                name TEXT NOT NULL, kind INTEGER NOT NULL, data BLOB NOT NULL,
                PRIMARY KEY(entry_id, ordinal));
+             CREATE TABLE IF NOT EXISTS thumbnails (
+               entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+               dib BLOB CHECK(dib IS NULL OR length(dib)<=12328));
              CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                search, content='entries', content_rowid='id', tokenize='trigram case_sensitive 1');
              CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
@@ -85,7 +89,8 @@ impl Store {
         };
         let sql = format!(
             "SELECT id, title,
-             NOT EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (13,15))
+             NOT EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (13,15)),
+             EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (8,17))
              FROM entries WHERE {predicate} ORDER BY id DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = self.0.prepare(&sql)?;
@@ -98,6 +103,7 @@ impl Store {
                 } else {
                     title
                 },
+                has_image: r.get(3)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -141,11 +147,94 @@ impl Store {
         use rusqlite::OptionalExtension;
         Ok(self.0.query_row("SELECT data FROM formats WHERE entry_id=? AND format_id IN (8,17) ORDER BY format_id DESC LIMIT 1", [entry], |r| r.get(0)).optional()?)
     }
+
+    pub fn thumbnail(&self, entry: i64) -> Result<Option<Vec<u8>>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .0
+            .query_row(
+                "SELECT dib FROM thumbnails WHERE entry_id=? AND length(dib)<=12328",
+                [entry],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn ensure_thumbnail(&self, entry: i64) -> Result<()> {
+        let cached: bool = self.0.query_row(
+            "SELECT EXISTS(SELECT 1 FROM thumbnails WHERE entry_id=?)",
+            [entry],
+            |r| r.get(0),
+        )?;
+        if cached {
+            return Ok(());
+        }
+        let Some(image) = self.image(entry)? else {
+            return Ok(());
+        };
+        let dib = crate::image::Image::from_dib(image).and_then(|image| image.thumbnail());
+        self.0.execute("INSERT OR IGNORE INTO thumbnails(entry_id,dib) SELECT ?,? WHERE EXISTS(SELECT 1 FROM entries WHERE id=?)",params![entry,dib,entry])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thumbnail_cache_survives_reopen_preserves_original_and_cascades() -> Result<()> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("clipboard-thumbnails-test-{stamp}.sqlite"));
+        let original = crate::image::thumbnail_fixture();
+        let cached;
+        {
+            let store = Store::open(&path)?;
+            store.0.execute(
+                "INSERT INTO entries(id,created,title) VALUES(1,0,'Image')",
+                [],
+            )?;
+            store.0.execute(
+                "INSERT INTO formats VALUES(1,0,8,'DIB image',0,?)",
+                [&original],
+            )?;
+            store.ensure_thumbnail(1)?;
+            cached = store.thumbnail(1)?.ok_or("Thumbnail missing")?;
+            assert!(cached.len() <= 12328);
+            assert_eq!(store.format(1, 0)?.data, original);
+            assert!(store.list("", 0)?[0].has_image);
+            store
+                .0
+                .execute("INSERT INTO entries(id,created) VALUES(2,0)", [])?;
+            store
+                .0
+                .execute("INSERT INTO formats VALUES(2,0,8,'DIB image',0,X'00')", [])?;
+            store.ensure_thumbnail(2)?;
+            store.ensure_thumbnail(2)?;
+            assert!(store.thumbnail(2)?.is_none());
+            let count: i64 = store.0.query_row(
+                "SELECT count(*) FROM thumbnails WHERE entry_id=2",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(
+                count, 1,
+                "Invalid images must be cached as failed, without repeated decoding"
+            );
+        }
+        {
+            let store = Store::open(&path)?;
+            assert_eq!(store.thumbnail(1)?.unwrap(), cached);
+            store.ensure_thumbnail(1)?;
+            assert_eq!(store.format(1, 0)?.data, original);
+            store.0.execute("DELETE FROM entries WHERE id=1", [])?;
+            assert!(store.thumbnail(1)?.is_none());
+        }
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
     #[test]
     fn disk_history_unicode_literal_search_and_paging() -> Result<()> {
         let stamp = std::time::SystemTime::now()
