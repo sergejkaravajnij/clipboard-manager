@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod clipboard;
 mod i18n;
+mod icon;
 mod image;
 mod preferences;
 mod settings_window;
@@ -247,6 +248,7 @@ impl App {
                 lpfnWndProc: Some(wndproc),
                 hInstance: instance,
                 hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+                hIcon: icon::load(false),
                 hbrBackground: (COLOR_WINDOW + 1) as HBRUSH,
                 lpszClassName: class_name.as_ptr(),
                 ..Default::default()
@@ -271,6 +273,12 @@ impl App {
             if hwnd.is_null() {
                 return Err("Не удалось создать окно".into());
             }
+            SendMessageW(
+                hwnd,
+                WM_SETICON,
+                ICON_SMALL as usize,
+                icon::load(true) as isize,
+            );
             let font = CreateFontW(
                 -17,
                 0,
@@ -386,7 +394,7 @@ impl App {
                 uID: 1,
                 uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
                 uCallbackMessage: TRAY,
-                hIcon: LoadIconW(null_mut(), IDI_APPLICATION),
+                hIcon: icon::tray(),
                 ..Default::default()
             };
             let tip = wide(&tr(

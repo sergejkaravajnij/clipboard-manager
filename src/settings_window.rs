@@ -92,6 +92,7 @@ impl SettingsWindow {
                 lpfnWndProc: Some(procedure),
                 hInstance: GetModuleHandleW(null()),
                 hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+                hIcon: crate::icon::load(false),
                 hbrBackground: (COLOR_WINDOW + 1) as HBRUSH,
                 lpszClassName: name.as_ptr(),
                 ..Default::default()
@@ -116,6 +117,12 @@ impl SettingsWindow {
             if hwnd.is_null() {
                 return Err("Could not create settings window".into());
             }
+            SendMessageW(
+                hwnd,
+                WM_SETICON,
+                ICON_SMALL as usize,
+                crate::icon::load(true) as isize,
+            );
             let language_label = control(hwnd, "STATIC", "", 0, 207, font);
             let language = control(
                 hwnd,
