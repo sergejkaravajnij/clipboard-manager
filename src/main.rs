@@ -803,6 +803,18 @@ impl App {
                     if sequence == self.own_sequence || sequence == self.last_sequence {
                         return;
                     }
+                    let owner = GetClipboardOwner();
+                    let mut owner_process = 0;
+                    if !owner.is_null() {
+                        GetWindowThreadProcessId(owner, &mut owner_process);
+                    }
+                    if owner_process == GetCurrentProcessId() {
+                        // Native preview controls can copy without using the history action.
+                        self.own_sequence = sequence;
+                        self.last_sequence = sequence;
+                        self.retries = 0;
+                        return;
+                    }
                     match clipboard::capture(&mut self.store, self.hwnd) {
                         Ok(entry) => {
                             self.last_sequence = GetClipboardSequenceNumber();
