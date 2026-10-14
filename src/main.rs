@@ -61,6 +61,7 @@ const SETTINGS_ID: usize = 109;
 const TIMER_CAPTURE: usize = 1;
 const TIMER_SEARCH: usize = 2;
 const TIMER_CLEANUP: usize = 3;
+const TIMER_PASTE: usize = 4;
 
 struct App {
     hwnd: HWND,
@@ -87,6 +88,8 @@ struct App {
     last_sequence: u32,
     retries: u32,
     visible: bool,
+    paste_target: HWND,
+    paste_attempts: u32,
     db_path: PathBuf,
     preferences: Preferences,
     preferences_path: PathBuf,
@@ -148,6 +151,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 return 0;
             }
             WM_TIMER => {
+                if w == TIMER_PASTE {
+                    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
+                    if !ptr.is_null() {
+                        (*ptr).paste();
+                    }
+                    return 0;
+                }
                 if w == TIMER_CLEANUP {
                     PostMessageW(hwnd, ACTION, CLEANUP, 0);
                     return 0;
@@ -477,6 +487,8 @@ impl App {
                 last_sequence: 0,
                 retries: 0,
                 visible: false,
+                paste_target: null_mut(),
+                paste_attempts: 0,
                 db_path,
                 preferences,
                 preferences_path,
@@ -708,6 +720,16 @@ impl App {
                 }
                 TOGGLE => self.action(if self.visible { HIDE } else { SHOW }),
                 SHOW => {
+                    KillTimer(self.hwnd, TIMER_PASTE);
+                    if !self.visible {
+                        let foreground = GetForegroundWindow();
+                        self.paste_target =
+                            if foreground != self.hwnd && foreground != self.settings_window.hwnd {
+                                foreground
+                            } else {
+                                null_mut()
+                            };
+                    }
                     self.action(CLEANUP);
                     self.visible = true;
                     self.offset = 0;
@@ -765,6 +787,12 @@ impl App {
                                 self.own_sequence = sequence;
                                 self.last_sequence = sequence;
                                 self.action(HIDE);
+                                if !self.paste_target.is_null() && IsWindow(self.paste_target) != 0
+                                {
+                                    SetForegroundWindow(self.paste_target);
+                                    self.paste_attempts = 0;
+                                    SetTimer(self.hwnd, TIMER_PASTE, 50, None);
+                                }
                             }
                             Err(e) => self.report(&e.to_string()),
                         }
@@ -938,6 +966,59 @@ impl App {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    unsafe fn paste(&mut self) {
+        unsafe {
+            self.paste_attempts += 1;
+            if self.visible
+                || IsWindow(self.paste_target) == 0
+                || GetForegroundWindow() != self.paste_target
+            {
+                KillTimer(self.hwnd, TIMER_PASTE);
+                return;
+            }
+            // Wait for the selection key and shortcut modifiers to be released.
+            if [
+                VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN, VK_RETURN, VK_LBUTTON,
+            ]
+            .iter()
+            .any(|key| GetAsyncKeyState(*key as i32) < 0)
+            {
+                if self.paste_attempts >= 40 {
+                    KillTimer(self.hwnd, TIMER_PASTE);
+                }
+                return;
+            }
+            KillTimer(self.hwnd, TIMER_PASTE);
+            let inputs = [
+                (VK_CONTROL, 0),
+                (VK_V, 0),
+                (VK_V, KEYEVENTF_KEYUP),
+                (VK_CONTROL, KEYEVENTF_KEYUP),
+            ]
+            .map(|(key, flags)| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: key,
+                        dwFlags: flags,
+                        ..Default::default()
+                    },
+                },
+            });
+            if SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            ) != inputs.len() as u32
+            {
+                log_error(
+                    &self.db_path,
+                    "Could not send the paste shortcut to the target application",
+                );
             }
         }
     }

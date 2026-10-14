@@ -9,12 +9,14 @@ A lightweight Windows 11 application built with Rust and Win32. Runs in the syst
 - Left-click the tray icon to open history.
 - Start typing to search clipboard contents and file names, ignoring case.
 - Use Up/Down to select an entry.
-- Press Enter, double-click, or click **Copy** to restore an entry to the clipboard.
+- Press Enter, double-click, or click **Copy** to restore an entry to the clipboard, hide history, and paste into the application from which history was opened.
 - Press Escape or close the window to hide history and keep recording.
 - Right-click the tray icon to access history, startup with Windows, and exit.
 - Use **Newer** and **Older** to navigate pages of 100 entries.
 
 The content list is on the left, without timestamps or entry sizes; the text or image preview is on the right. Search covers the entire database, not just the current page.
+
+Automatic paste returns focus to the previous application and sends `Ctrl+V` after you release the selection key and shortcut modifiers. If the target window is closed or focus moves elsewhere, paste is cancelled; the entry remains on the clipboard. Windows may block automatic paste into applications running as administrator.
 
 Images in the list have thumbnails up to 64 × 48 pixels. They are generated in the background and stored in the `thumbnails` table of the same SQLite database; original data remains unchanged. For older entries, thumbnails are generated when their page is opened. Only the current page is held in memory; thumbnails are released when the window is hidden. Text rows stay compact, while image rows are taller.
 
