@@ -583,6 +583,7 @@ impl App {
                         list_view::Visual {
                             label: row.label.clone(),
                             has_image: row.has_image,
+                            copied: row.copied,
                             thumbnail,
                         }
                     })
@@ -605,6 +606,7 @@ impl App {
                     GetTextExtentPoint32W(dc, label.as_ptr(), (label.len() - 1) as i32, &mut size);
                     longest = longest.max(
                         size.cx
+                            + 14
                             + if row.has_image {
                                 list_view::THUMBNAIL_WIDTH + 12
                             } else {
@@ -784,6 +786,9 @@ impl App {
                     if let Some(row) = self.rows.get(selected as usize) {
                         match clipboard::restore(&self.store, row.id, self.hwnd) {
                             Ok(sequence) => {
+                                if let Err(e) = self.store.mark_copied(row.id) {
+                                    log_error(&self.db_path, &e.to_string());
+                                }
                                 self.own_sequence = sequence;
                                 self.last_sequence = sequence;
                                 self.action(HIDE);

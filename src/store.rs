@@ -12,6 +12,7 @@ pub struct Row {
     pub id: i64,
     pub label: String,
     pub has_image: bool,
+    pub copied: bool,
 }
 
 pub struct Format {
@@ -22,6 +23,10 @@ pub struct Format {
 }
 
 impl Store {
+    pub fn mark_copied(&self, id: i64) -> Result<()> {
+        self.0.execute("UPDATE entries SET copied=1, position=(SELECT COALESCE(MAX(position),0)+1 FROM entries) WHERE id=?", [id])?;
+        Ok(())
+    }
     pub fn delete(&self, id: i64) -> Result<usize> {
         Ok(self.0.execute("DELETE FROM entries WHERE id=?", [id])?)
     }
@@ -80,6 +85,24 @@ impl Store {
         if !indexed {
             conn.execute_batch("INSERT INTO entries_fts(entries_fts) VALUES('rebuild');")?;
         }
+        let migrated: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('entries') WHERE name='position')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !migrated {
+            conn.execute_batch(
+                "BEGIN IMMEDIATE;
+                ALTER TABLE entries ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE entries ADD COLUMN copied INTEGER NOT NULL DEFAULT 0;
+                UPDATE entries SET position=id;
+                COMMIT;",
+            )?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS entries_position ON entries(position DESC);
+            CREATE TRIGGER IF NOT EXISTS entries_position_ai AFTER INSERT ON entries BEGIN
+                UPDATE entries SET position=(SELECT COALESCE(MAX(position),0)+1 FROM entries) WHERE id=new.id;
+            END;")?;
         Ok(Self(conn))
     }
 
@@ -105,8 +128,8 @@ impl Store {
         let sql = format!(
             "SELECT id, title,
              NOT EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (13,15)),
-             EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (8,17))
-             FROM entries WHERE {predicate} ORDER BY id DESC LIMIT ? OFFSET ?"
+             EXISTS(SELECT 1 FROM formats WHERE entry_id=entries.id AND format_id IN (8,17)), copied
+             FROM entries WHERE {predicate} ORDER BY position DESC, id DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = self.0.prepare(&sql)?;
         let rows = stmt.query_map(params![pattern, PAGE_SIZE as i64, offset as i64], |r| {
@@ -119,6 +142,7 @@ impl Store {
                     title
                 },
                 has_image: r.get(3)?,
+                copied: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -197,6 +221,36 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn copied_entries_move_to_top_without_duplicates_or_age_changes() -> Result<()> {
+        let store = Store::open(Path::new(":memory:"))?;
+        for id in 1..=3 {
+            store.0.execute(
+                "INSERT INTO entries(id,created,search) VALUES(?,100,'needle')",
+                [id],
+            )?;
+        }
+        store.mark_copied(1)?;
+        let rows = store.list("needle", 0)?;
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1, 3, 2]);
+        assert!(rows[0].copied);
+        assert!(!rows[1].copied);
+        store.0.execute(
+            "INSERT INTO entries(id,created,search) VALUES(4,200,'needle')",
+            [],
+        )?;
+        assert_eq!(store.list("", 0)?[0].id, 4);
+        store.mark_copied(2)?;
+        store.mark_copied(1)?;
+        assert_eq!(store.list("", 0)?[0].id, 1);
+        assert_eq!(store.count()?, 4);
+        let created: i64 =
+            store
+                .0
+                .query_row("SELECT created FROM entries WHERE id=1", [], |r| r.get(0))?;
+        assert_eq!(created, 100);
+        Ok(())
+    }
     #[test]
     fn retention_boundary_disabled_cleanup_and_selected_delete() -> Result<()> {
         let store = Store::open(Path::new(":memory:"))?;

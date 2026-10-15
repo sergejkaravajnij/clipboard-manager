@@ -10,6 +10,7 @@ pub const THUMBNAIL_WIDTH: i32 = 64;
 pub struct Visual {
     pub label: String,
     pub has_image: bool,
+    pub copied: bool,
     pub thumbnail: Option<Image>,
 }
 pub type State = RefCell<Vec<Visual>>;
@@ -58,7 +59,24 @@ pub unsafe fn draw(item: &DRAWITEMSTRUCT) -> bool {
                 }),
             );
             let old_background = SetBkMode(item.hDC, TRANSPARENT as i32);
-            let left = item.rcItem.left + 8 - GetScrollPos(item.hwndItem, SB_HORZ);
+            let marker_left = item.rcItem.left + 8 - GetScrollPos(item.hwndItem, SB_HORZ);
+            if row.copied {
+                let brush = CreateSolidBrush(0x0000d7ff);
+                let old_brush = SelectObject(item.hDC, brush);
+                let old_pen = SelectObject(item.hDC, GetStockObject(NULL_PEN));
+                let center = (item.rcItem.top + item.rcItem.bottom) / 2;
+                Ellipse(
+                    item.hDC,
+                    marker_left,
+                    center - 4,
+                    marker_left + 8,
+                    center + 4,
+                );
+                SelectObject(item.hDC, old_pen);
+                SelectObject(item.hDC, old_brush);
+                DeleteObject(brush);
+            }
+            let left = marker_left + 14;
             let mut rect = item.rcItem;
             rect.left = left;
             if row.has_image {
@@ -115,11 +133,13 @@ mod tests {
             Visual {
                 label: "Image 256 × 128".into(),
                 has_image: true,
+                copied: true,
                 thumbnail: Some(thumbnail),
             },
             Visual {
                 label: "Copied text".into(),
                 has_image: false,
+                copied: false,
                 thumbnail: None,
             },
         ]));
@@ -228,6 +248,7 @@ mod tests {
             GdiFlush();
             let pixels = std::slice::from_raw_parts(bits.cast::<u8>(), 320 * 86 * 4);
             let pixel = |x: usize, y: usize| &pixels[(y * 320 + x) * 4..(y * 320 + x) * 4 + 3];
+            assert_eq!(pixel(12, 30), &[0, 215, 255]);
             assert_eq!(pixel(40, 22), &[0, 0, 255]);
             assert_eq!(pixel(40, 38), &[255, 0, 0]);
             let background = GetSysColor(COLOR_WINDOW);
